@@ -9,7 +9,7 @@ from collections import deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import wraps
 from pathlib import Path
-from typing import Any, Callable, Generator, Optional, Tuple, Type, Union
+from typing import Any, Callable, Generator, List, Optional, Tuple, Type, Union
 
 try:
     from functools import cache
@@ -30,6 +30,7 @@ from .exceptions import (
     OLMoNetworkError,
     OLMoUploadError,
 )
+from .fs_cache import maybe_cache
 
 log = logging.getLogger(__name__)
 
@@ -63,6 +64,22 @@ def join_path(path: PathOrStr, *paths: PathOrStr) -> PathOrStr:
     return path
 
 
+def get_parent(path: PathOrStr) -> PathOrStr:
+    """
+    Get the parent directory of a path.
+
+    :param path: The path/URL to get the parent of.
+    """
+    if is_url(path):
+        path = str(normalize_path(path))
+        if path.count("/") > 2:
+            return "/".join(path.split("/")[:-1])
+        else:
+            return path
+    else:
+        return Path(normalize_path(path)).parent
+
+
 def resource_path(folder: PathOrStr, fname: str, local_cache: Optional[PathOrStr] = None) -> Path:
     """
     Returns an actual path for local or remote file, potentially downloading it if a copy doesn't
@@ -86,9 +103,14 @@ def is_url(path: PathOrStr) -> bool:
     return re.match(r"[a-z0-9]+://.*", str(path)) is not None
 
 
+@maybe_cache(condition=is_url)
 def get_file_size(path: PathOrStr) -> int:
     """
     Get the size of a local or remote file in bytes.
+
+    .. warning::
+        Uses caching if the argument is URL if the filesystem cache is enabled
+        (see :func:`olmo_core.fs_cache.maybe_cache`).
 
     :param path: Path/URL to the file.
     """
@@ -468,6 +490,18 @@ def glob_directory(pattern: str) -> Generator[str, None, None]:
     for path in list_directory(dir, recurse="**" in pattern):
         if pattern_regex.match(path):
             yield path
+
+
+@maybe_cache(condition=is_url)
+def deterministic_glob_directory(pattern: str) -> List[str]:
+    """
+    Like :func:`glob_directory` but returns a sorted list for deterministic ordering.
+
+    .. warning::
+        Uses caching if the argument is URL if the filesystem cache is enabled
+        (see :func:`olmo_core.fs_cache.maybe_cache`).
+    """
+    return sorted(glob_directory(pattern))
 
 
 def init_client(remote_path: str):

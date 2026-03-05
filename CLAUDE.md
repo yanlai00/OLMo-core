@@ -2,87 +2,159 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Project Overview
+## Overview
 
-OLMo-core is the core training infrastructure library for the Open Language Model (OLMo) project by Allen Institute for AI. It provides building blocks for large language model training and inference, including neural network modules, distributed training, data loading, optimization, and checkpointing.
+OLMo-core is AI2's training library for the Open Language Model (OLMo) series. It provides modular components for transformer architectures, distributed training, data loading, and evaluation.
 
-## Development Commands
+## Commands
 
 ```bash
-# Install in development mode
-pip install -e '.[all]'    # or: uv sync --all-extras
+# Install (development)
+pip install -e '.[all]'
 
-# Code formatting
-make style                  # Format code with isort and black
-make style-check            # Check formatting without changes
+# Run all tests (GPU tests auto-skip without GPU)
+pytest -v src/
 
-# Linting and type checking
-make lint-check             # Run ruff linter
-make type-check             # Run mypy type checker
-make checks                 # Run all checks (style, lint, type)
+# Run a specific test file
+pytest -v src/test/path/to/test_file.py
 
-# Testing
-pytest -v src/test                      # Run all tests
-pytest src/test/nn/rope_test.py         # Run specific test file
-pytest -k rope                          # Run tests matching keyword
-pytest -m gpu                           # Run only GPU tests
-pytest -m "not gpu"                     # Exclude GPU tests
+# Filter to specific tests by keywords
+pytest -v src/test/path/to/test_file.py -k 'keyword'
 
-# Documentation
-make docs                   # Build and serve docs locally
+# Auto-format code
+make style
+
+# Check formatting, lint, and types
+make checks          # all three at once
+make style-check     # isort + black
+make lint-check      # ruff
+make type-check      # mypy
 ```
 
-## Code Architecture
+## Code Style
 
-### Directory Structure
-- `src/olmo_core/` - Main library code
-- `src/test/` - Tests (mirrors library structure)
-- `src/scripts/official/` - Official training scripts for OLMo-2 and OLMo-3
-- `src/examples/` - Example code and reference implementations
+- Line length: 100
+- Formatting: `isort` (profile=black) + `black`
+- Linting: `ruff` (ignores F403, F405, E501; F401 ignored in `__init__.py`)
+- Type checking: `mypy` with `ignore_missing_imports = true`
 
-### Key Modules
-- `nn/` - Neural network building blocks: attention (flash-attn, ring-attn), transformer blocks, MoE, RoPE embeddings
-- `train/` - Training orchestration: Trainer class, TrainModule abstraction, callbacks system
-- `data/` - Data loading: NumPy datasets (memory-mapped), composable transforms, source mixing
-- `optim/` - Optimizers (AdamW, Lion) and LR schedulers (cosine, linear)
-- `distributed/` - Distributed training: checkpoint sharding, parallel strategies, collective communications
-- `launch/` - Job launching (Beaker integration)
+## Docstrings
 
-### Configuration Pattern
-Everything uses dataclass-based configs inheriting from `Config` base class. Configs support:
-- YAML loading via `Config.from_yaml()`
-- Command-line overrides of nested values (e.g., `--train_module.optim.lr=6e-3`)
-- OmegaConf for config merging
+- Docstrings should be included on all public classes, methods, and functions.
+- We use Sphinx to automatically build API docs by pulling from those docstrings.
+- The syntax of the docstrings is a superset of reStructuredText with additional Sphinx-specific syntax for things like:
+  - Cross-document links, e.g.:
+    ```
+    :class:`foo.Foo`  <- links to the class named 'Foo' in the module 'foo'
+    :mod:`foo`        <- links to the module named 'foo'
+    :func:`foo.bar`   <- links to the function named 'bar' in the module named 'foo'
+    ```
+  - Documenting parameters (`:param ...:`), return values (`:returns:`), or expected exceptions (`:raises ...:`).
 
-### Training Pipeline Flow
+Here's a toy example for a function:
+
+```python
+def read_file(path: str) -> str:
+    """
+    Read a file from disk.
+
+    :param path: The path to the file.
+
+    :returns: The contents of the file.
+
+    :raises FileNotFoundError: If the file doesn't exist.
+    """
+    pass
 ```
-TrainerConfig → Trainer → TrainModule → Model + Optimizer
-                  ↓
-              Callbacks (checkpointing, evaluation, logging)
-                  ↓
-              DataLoader → NumPy datasets
-```
 
-## Testing Conventions
+## Architecture
 
-- Test files: `*_test.py` (not `test_*.py`)
-- Test functions: `test_*`
-- Mirror source structure: `src/olmo_core/nn/rope.py` → `src/test/nn/rope_test.py`
-- GPU tests use `@requires_gpu` decorator (auto-skip on CPU)
-- Multi-GPU tests use `@requires_multi_gpu` and `run_distributed_test()` helper
-- Prefer `pytest.mark.parametrize` for test variations
+### Configuration System (`src/olmo_core/config.py`)
 
-## Running Training Scripts
+Everything is configured via `@dataclass` classes inheriting from `Config`. This is the central design pattern:
+- Configs support YAML/JSON serialization, command-line overrides via dot notation (`--train_module.optim.lr=6e-3`), and `merge()` with dotlists.
+- The `Registrable` mixin (from `dataclass-extensions`) enables polymorphic config fields — a base config class can resolve to different subclasses at runtime based on a `type` field. Used in optimizers, schedulers, attention backends, and data loaders.
+- Nested configs compose modularly: `TrainerConfig` contains `CheckpointerConfig`, `OptimConfig`, etc.
 
-Official training scripts are launched with torchrun:
+### Training Pipeline (`src/olmo_core/train/`)
+
+- `Trainer` / `TrainerConfig`: Core training loop with checkpointing, evaluation, and an extensible callback system (`callbacks/`).
+- `TrainModule`: Wraps the model with forward/backward logic and optimizer. The main concrete implementation is `TransformerTrainModule` / `TransformerTrainModuleConfig`, which handles parallelism setup (DP, TP, PP, CP, EP configs all live here).
+
+### Model Architecture (`src/olmo_core/nn/`)
+
+- `transformer/`: Core transformer with configurable blocks. `TransformerConfig` has factory methods like `olmo2_32B()` for predefined architectures.
+- `attention/`: Multi-head attention with backends (flash attention, ring attention, etc.).
+- `moe/`: Mixture of Experts with expert parallelism.
+- `feed_forward.py`, `layer_norm.py`, `rope.py`, `lm_head.py`: Standard components.
+
+### Data Loading (`src/olmo_core/data/`)
+
+- `NumpyDataset` variants: Memory-mapped numpy datasets for pre-tokenized data (`.npy` files).
+- `composable/`: The preferred data loading API, built on a pipeline of `TokenSource` -> `InstanceSource` -> `ComposableDataLoader`. Sources can be sliced, sampled, mixed with ratios, and split for curriculum learning. Use `InstanceSource.visualize()` to inspect the source tree. See the module docstring in `src/olmo_core/data/composable/__init__.py` for detailed examples.
+- `mixes/`: Predefined data mixture configs (dolma17, OLMoE-mix-0824, etc.) with paths to tokenized data by source and tokenizer.
+- Training data is stored on AI2 infrastructure (Weka filesystem, GCS). For local development, use small validation sets or synthetic data.
+
+### Distributed Training (`src/olmo_core/distributed/`)
+
+- `parallel/`: Implementations of data (FSDP/HSDP/DDP), tensor, pipeline, context (ring attention), and expert parallelism. These can be combined for multi-dimensional parallelism.
+- `checkpoint/`: Distributed checkpointing with various filesystem backends.
+
+### Optimization (`src/olmo_core/optim/`)
+
+- Optimizer configs (`AdamWConfig`, `SkipStepAdamWConfig`, `LionConfig`) and LR schedulers (`CosWithWarmup`, etc.).
+- `SkipStepOptimizer`: Wrapper for gradient clipping with loss spike detection.
+
+### Examples (src/examples)
+
+Runnable, self-contained examples and reference scripts.
+
+### Training Scripts
+
+Two patterns exist:
+
+**Official scripts** (`src/scripts/official/`): Use `ExperimentConfig` + `main()` from `src/olmo_core/script_utils.py`. Launched with `torchrun` or Beaker. These reproduce published model runs.
+
 ```bash
 torchrun --nproc-per-node=8 src/scripts/official/OLMo2/OLMo-2-0325-32B-train.py \
   --save-folder=/path/to/checkpoints
 ```
 
-## PR Requirements
+**Internal scripts** (`src/scripts/train/`): Use `prepare_cli_environment()` with commands (`launch`, `train`, `train_single`, `prep`, `dry_run`). See `template.py` for the starting point.
 
-- Update `CHANGELOG.md` (enforced by CI)
-- All checks must pass (`make checks`)
-- Add tests for new functionality
-- Update docstrings for new public APIs
+```bash
+python src/scripts/train/OLMo2-1B.py dry_run test-run ai2/titan-cirrascale
+python src/scripts/train/OLMo2-1B.py launch olmo2-1b-test ai2/jupiter-cirrascale-2 --launch.num_nodes=4
+```
+
+## Docker and Beaker Launch
+
+The Docker image (`src/Dockerfile`) is a two-stage build: a `build` stage compiles GPU-specific dependencies (flash-attn, TransformerEngine, grouped_gemm, ring-flash-attn, etc.) on an NVIDIA CUDA devel image, and a `release` stage copies the conda environment into a lighter Ubuntu base with AWS CLI, Google Cloud SDK, and MLNX OFED drivers. The image contains all dependencies but *not* the OLMo-core package itself — source code is cloned at runtime.
+
+```bash
+# Build locally (versions configured in Makefile)
+make docker-image
+
+# Push to GHCR
+make ghcr-image
+
+# Create Beaker image
+make beaker-image
+```
+
+**How launch works**: When a training script uses the `launch` command (or `BeakerLaunchConfig.launch()`), it creates a Gantry recipe that:
+1. Starts a container from a pre-built Beaker image (default: `OLMoCoreBeakerImage.stable` in `src/olmo_core/launch/beaker.py`)
+2. Clones the git repo at the current commit into the container (requires clean working tree unless `allow_dirty=True`)
+3. Installs the package from source (`pip install -e .`)
+4. Runs the training command, optionally wrapped with `torchrun` for multi-GPU/multi-node
+
+Pre-built images are listed in the `OLMoCoreBeakerImage` enum in `src/olmo_core/launch/beaker.py`, tagged by torch version and CUDA version (e.g., `tch2100cu128`). The `stable` image tracks the default torch/CUDA versions. When updating default images, also update `.github/workflows/main.yml`.
+
+`BeakerLaunchConfig` also supports `pre_setup` and `post_setup` hooks for running commands before/after the package install step, Weka bucket mounts, and multi-node settings (replicas, leader selection, host networking).
+
+## Testing
+
+- Tests in `src/test/` mirror the source structure.
+- Name individual test functions `test_*` and prefer `pytest.mark.parametrize` to cover multiple inputs or configurations without duplicating code.
+- GPU tests use `@pytest.mark.gpu` and are skipped without a GPU.
+- Distributed tests use helpers in `src/olmo_core/testing/distributed.py`.

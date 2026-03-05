@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added support for in-loop perplexity evals with context parallelism (CP) and tensor parallelism (TP).
+- Added documentation for verifying chat template settings before running evals after SFT.
 - Added `olmo_core.data.composable` module.
 - Added `PeriNormTransformerBlock`.
 - Added exponential learning rate scheduler to `olmo_core.optim.scheduler`.
@@ -16,19 +18,74 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - MoE: Added `TrainModuleConfig` ABC
 - Added a `MetricSaverCallback` which just saves metrics at specific intervals to JSON files in the `save_folder`.
 - Added `fixed_steps` option to `Checkpointer` and `Evaluator` callbacks for configuring checkpoints/evals at specific step numbers.
+- Added support for supervised finetuning.
+- Added support for gated attention.
+- Added support for no-global-rope ("GNoPE").
+- Added support for MXFP8 Linear layers via torchao.
+- Added support for tracking total flops.
+- Added support for Gemma 3 models.
+- Added support for Qwen3 models.
+- Added support for Muon and Dion optimizers.
+- Added support for Ulysses-style context parallelism.
+- Added Beaker URL to Wandb logging.
+- Added 60M, 14M, and 1M model sizes.
+- `SpeedMonitorCallback` will log Chinchilla multiple number of tokens during training with a `TransformerTrainModule`.
+- Added support for flash-attn 4 (CUTE implementation).
+- Added `Callback.pre_log_metrics()` method.
+- Added `SequenceMixer` base class that both attention and recurrent layers inherit from.
+- Added `GatedDeltaNet` layer implementation.
+- Added `InitMethod.fan_in` for per-layer fan-in initialization where each weight matrix uses `std = 1/√d_in`.
+- Added `StabilityMonitorCallback` for detecting training instability via spike detection in loss and gradient norm.
+- Added `gate` and `activation` parameters to `TransformerConfig.gemma3_like()`.
+- Added another ladder script, with `--train-single` flag.
+- Added `CuTeRMSNorm`, a CuTe-based RMSNorm implementation from the QuACK library.
+- Added `lazy` option to `DownstreamEvaluatorCallbackConfig` for lazily loading each task which can decrease startup time.
+- `TrainingProgress` (from `Trainer.training_progress`) now includes `current_tokens`, `bps`, `tps`, and `mfu` fields.
+- `BeakerCallback` will include throughput metrics in the workload description.
+- Added `olmo_core.io.deterministic_glob_directory` function.
+- Added the option to cache the results of certain IO operations on remote files, like `get_file_size()` and `deterministic_glob_directory()` by setting the env var `OLMO_CORE_FS_CACHE_DIR` to a local directory.
+- Added `eval_on_finish` option to `EvaluatorCallback`.
+- Added the option to use a process pool instead of a thread pool when writing checkpoints.
+- Added `max_document_length` and `long_doc_strategy` options to `NumpyDocumentSource` in composable data API.
+- Mark ephemeral checkpoints with the `ephemeral` flag in their metadata.
+- Added `ephemeral: Optional[bool]` flag the `Checkpointer.find_checkpoints()` for filtering.
+- Added support for block-pattern based initialization of hybrid transformers. `TransformerConfig.block` now accepts a dict of named `TransformerBlockConfig`s, paired with a `block_pattern` list that controls per-layer block selection.
+- Added optional `vocab_size` field to `DataCollator` for validating token IDs are in `[0, vocab_size)` before the batch reaches the model. Wired through automatically in both `NumpyDataLoaderConfig` and `ComposableDataLoaderConfig`.
+- Added Olmo-hybrid official training configs and conversion script.
 
 ### Fixed
 
+- Fixed `Transformer.get_rope_buffers()` crashing on non-rope attention mixers like `GatedDeltaNet`.
+- Fixed A100 peak flops spec in `SpeedMonitorCallback` being 2x too low, which inflated MFU by 2x.
 - Fixed `AttentionConfig.num_params()` overcounting QK norm parameters when using GQA/MQA with `use_head_qk_norm=False`.
 - Fixed the peak learning rate in `src/scripts/train/OLMo3/OLMo3-32B-midtraining.py` to the correct one.
 - Fixed type annotation issue in `NumpyInterleavedFSLDataset` where `_num_interleaving_exempt_instances` and `_num_interleavable_instances` were missing `Optional[int]` type hints, causing mypy type errors.
+- Fixed bug in GPUMonitorCallback where it was using a Wandb reserved keyword, causing data to be unable to be visualized in the Wandb dashboard.
+- Fixed the ConsoleLoggerCallback filtering to support the new prefix (gpu_memory) for GPUMonitorCallback.
+- Avoid torch dynamo recompiles when intra-document masking enabled by marking `cu_doc_lens` and `max_doc_len` dynamic.
+- Flops tracking for ParallelMLP and SWA layers.
+- Fix overflow when too many global flops are computed.
+- Ladder lmevaluator typo.
+- Made some functions involved in data loading preprocessing more robust to race conditions.
+- GAPMonitorCallback would raise an error if a local tensor shard had 0 elements.
+- Fixed a bug where final metrics might not get logged.
+- Fix failing test_build_world_mesh_cpu for pytorch 2.10.
+- Fix failing convert_checkpoint_to_hf_test due by reducing total disk space required.
+- Ensure all metrics have been logged and bookkeeping ops complete before writing a checkpoint.
+- Fixed `self == InitMethod.*` comparisons in `Attention`, `FusedAttention`, and `GatedDeltaNet` init that should have been `init_method == InitMethod.*`, causing depth-scaled output projection init to never apply.
+- Minor improvements to make checkpointing more robust.
 
 ### Changed
 
+- Updated SFT documentation with alternative tokenization approach and tips for new base models.
 - Renamed `olmo_core.distributed.utils.scatter_object()` to `broadcast_object()` for correctness.
 - Updated stable torch version to 2.9.1, updated versions of underlying libraries in Beaker Images.
 - `olmo_core.io.join_path()` now accepts an arbitrary number of components to join.
 - All `olmo_core.nn` module configs now inherit from a common base class, `ModuleConfig`.
+- Big changes to `olmo_core.model_ladder` API.
+- Add ngram instance filter to olmo3_ladder.
+- Upgraded to beaker-py v2.
+- Now, we check `dist.is_initialized()` before calling `dist.init_process_group()` in `init_distributed()`.
 
 ## [v2.4.0](https://github.com/allenai/OLMo-core/releases/tag/v2.4.0) - 2025-11-20
 
@@ -153,6 +210,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Add support for BOS token matching EOS token for intra-document masking in FSL numpy datasets.
 - Added option to allow profiler to record on multiple ranks.
 - Added support for accessing Google on non-Google clusters via auth with service account keys.
+- Added an example script for launching an SFT job.
 - Added support for revisions in `convert_checkpoint_from_hf.py` and the `load_hf_model` method of `olmo_core.nn.hf.checkpoint`.
 - `foreach` support in `SkipStepAdamW`.
 - Added `budget` mode for activation checkpointing configuration.
